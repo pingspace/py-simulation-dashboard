@@ -1,4 +1,3 @@
-import streamlit
 from ui_components.result import ResultUI
 
 

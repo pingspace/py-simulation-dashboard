@@ -1,20 +1,30 @@
 import streamlit
-from core.parameters import Parameters
 from input_creation.input_buffer import InputBuffer
 from input_creation.input_database import InputDatabase
-from input_creation.input_delay import InputDelay
-from input_creation.input_optimisation import InputOptimisation
 from input_creation.input_simulation import InputSimulation
 from input_creation.input_skycar import InputSkyCarSetup
+from input_creation.input_skycar_constraints import InputSkyCarConstraints
 from input_creation.input_sm_obstacles import InputSMObstacles
 from input_creation.input_tc_obstacles import InputTCObstacles
-from input_creation.input_skycar_constraints import InputSkyCarConstraints
-from input_creation.input_zones import InputZonesAndStations
+from input_creation.input_zones_stations import InputZonesAndStations
 from ui_components.grid_designer import GridDesignerUI
 from ui_components.simulation_input import SimulationInputUI
 
+from frontend.input_creation.input_autostore import InputAutostore
+
 
 class SimulationPreparationUI:
+    """
+    Class to prepare the inputs to be sent to relevant servers.
+
+    Parameters
+    ----------
+    grid_designer_ui : GridDesignerUI
+        The UI for grid designer.
+    simulation_input_ui : SimulationInputUI
+        The UI for simulation input.
+    """
+
     def __init__(
         self, grid_designer_ui: GridDesignerUI, simulation_input_ui: SimulationInputUI
     ):
@@ -22,6 +32,15 @@ class SimulationPreparationUI:
         self.simulation_input_ui = simulation_input_ui
 
     def show(self) -> bool:
+        """
+        Show the simulation preparation UI.
+
+        Returns
+        -------
+        bool
+            True if the simulation preparation UI can be displayed successfully, False
+            otherwise.
+        """
         streamlit.write("## Simulation Preparation")
 
         server_number = streamlit.selectbox(
@@ -41,14 +60,12 @@ class SimulationPreparationUI:
         input_buffer = InputBuffer(buffer_ratio=self.grid_designer_ui.buffer_ratio)
         input_skycar_setup = InputSkyCarSetup(
             number_of_skycars=self.simulation_input_ui.number_of_skycars,
-            model=Parameters.ZONE_NAME,
         )
         input_tc_obstacles = InputTCObstacles(grid_designer_ui=self.grid_designer_ui)
         input_skycar_constraints = InputSkyCarConstraints(
             grid_designer_ui=self.grid_designer_ui
         )
-        input_delay = InputDelay(
-            simulation_input_ui=self.simulation_input_ui,
+        input_autostore = InputAutostore(
             input_zones_and_stations=input_zones_and_stations,
         )
         input_simulation = InputSimulation(
@@ -62,7 +79,6 @@ class SimulationPreparationUI:
             input_zones_and_stations=input_zones_and_stations,
             input_simulation=input_simulation,
         )
-        input_optimisation = InputOptimisation()
 
         # Option to show request files
         is_show_files = streamlit.checkbox("Show request files")
@@ -103,16 +119,10 @@ class SimulationPreparationUI:
                     json_data=json_data, file_name="reset-7.json"
                 )
 
-            with streamlit.expander("reset-delay.json: Delay"):
-                json_data = input_delay.to_json()
+            with streamlit.expander("reset-autostore.json: Autostore"):
+                json_data = input_autostore.to_json()
                 self._show_individual_json_file(
-                    json_data=json_data, file_name="reset-delay.json"
-                )
-
-            with streamlit.expander("reset-optimisation.json: Bin optimisation"):
-                json_data = input_optimisation.to_json()
-                self._show_individual_json_file(
-                    json_data=json_data, file_name="reset-optimisation.json"
+                    json_data=json_data, file_name="reset-autostore.json"
                 )
 
             with streamlit.expander("reset-simulation.json: Simulation"):
@@ -133,8 +143,7 @@ class SimulationPreparationUI:
         self.input_skycar_setup = input_skycar_setup
         self.input_tc_obstacles = input_tc_obstacles
         self.input_skycar_constraints = input_skycar_constraints
-        self.input_delay = input_delay
-        self.input_optimisation = input_optimisation
+        self.input_autostore = input_autostore
         self.input_simulation = input_simulation
         self.input_database = input_database
         self.server_number = server_number
@@ -142,6 +151,16 @@ class SimulationPreparationUI:
         return True
 
     def _show_individual_json_file(self, json_data: str, file_name: str):
+        """
+        Helper method to show individual JSON files and allow download.
+
+        Parameters
+        ----------
+        json_data : str
+            The JSON data to be shown.
+        file_name : str
+            The name of the file to be downloaded.
+        """
         streamlit.download_button(
             label="Download",
             data=json_data,

@@ -1,5 +1,10 @@
+"""
+Main file for simulation backend via FastAPI.
+"""
+
 import time
 from datetime import datetime
+from typing import Dict
 
 from fastapi import BackgroundTasks, Body, FastAPI
 from job_service import JobsCreationRequest, JobService
@@ -16,18 +21,43 @@ job_creation_status = {
 
 
 @app.get("/time")
-async def get_current_time():
+async def get_current_time() -> Dict:
+    """
+    Get current time in YYYY-MM-DD HH:MM:SS format. Mainly to test for response.
+
+    Returns
+    -------
+    Dict
+        JSON response with current time.
+    """
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return {"current_time": current_time}
 
 
 @app.get("/status")
-async def get_status():
+async def get_status() -> Dict:
+    """
+    Get the status of the job creation process.
+
+    Returns
+    -------
+    Dict
+        JSON response with the status of the job creation process.
+    """
     return job_creation_status
 
 
 @app.post("/jobs/stop")
 async def stop_jobs():
+    """
+    Stop the job creation process.
+
+    Returns
+    -------
+    Dict
+        JSON response with the message indicating the job creation process has been
+        stopped.
+    """
     job_creation_status["stop_requested"] = True
     return {"message": "Job creation process has been stopped"}
 
@@ -36,7 +66,23 @@ async def stop_jobs():
 async def create_jobs(
     background_tasks: BackgroundTasks,
     jobs_creation_request: JobsCreationRequest = Body(...),
-):
+) -> Dict:
+    """
+    The main job creation endpoint.
+
+    Parameters
+    ----------
+    background_tasks : BackgroundTasks
+        The background tasks to run the job creation process.
+    jobs_creation_request : JobsCreationRequest
+        The request body containing the jobs creation request.
+
+    Returns
+    -------
+    Dict
+        JSON response with the message indicating the job creation process has been
+        started.
+    """
     # Reset the status before starting new job creation
     job_creation_status["start_time"] = None
     job_creation_status["stop_requested"] = False
@@ -49,6 +95,9 @@ async def create_jobs(
     )
 
     def create_jobs_and_update_status():
+        """
+        Background task to create jobs and update the status.
+        """
         job_creation_status["start_time"] = time.time()
         job_service.create_jobs()
 

@@ -11,12 +11,38 @@ from core.tc_database import MongoService
 
 
 class Coordinates:
+    """
+    Station coordinates.
+
+    Parameters
+    ----------
+    x : int
+        The x coordinate of the station.
+    y : int
+        The y coordinate of the station.
+    """
+
     def __init__(self, x: int, y: int):
         self.x = x
         self.y = y
 
 
 class Station:
+    """
+    Station object.
+
+    Parameters
+    ----------
+    code : int
+        The code of the station.
+    type_ : str
+        The type of the station. Either "I" for inbound or "O" for outbound.
+    drop_coords : Coordinates
+        The coordinates of the drop of the station.
+    pick_coords : Coordinates
+        The coordinates of the pick of the station.
+    """
+
     def __init__(
         self, code: int, type_: str, drop_coords: Coordinates, pick_coords: Coordinates
     ):
@@ -27,12 +53,33 @@ class Station:
 
 
 class ResultUI:
+    """
+    Class to display the result of the simulation and run animation.
+
+    Attributes
+    ----------
+    duration_in_hours : float
+        The duration of the simulation in hours.
+    """
+
+    duration_in_hours: float
+    logs: pandas.DataFrame
+    movement_data: pandas.DataFrame
+    advance_order_ranges: List[Tuple[float, float]]
+    normal_operation_ranges: List[Tuple[float, float]]
+    normal_operation_duration_in_hours: float
+    stations: List[Station]
+
     def __init__(self):
-        # Initialize session state cache if it doesn't exist
+        # Cache is used to store the data so that it is not reloaded every time the
+        # user chooses a simulation. Initialise the cache if it does not exist.
         if "simulation_cache" not in streamlit.session_state:
             streamlit.session_state.simulation_cache = {}
 
     def show(self):
+        """
+        Show the whole result page
+        """
         streamlit.write("## Results")
 
         # Choose date range for the list of simulation runs
@@ -106,7 +153,8 @@ class ResultUI:
             ]
             simulation_run_id = selected_simulation["id"].iloc[0]
 
-            # Check if simulation data is already cached in session state
+            # Check if simulation data is already cached in session state. Load the data
+            # from the cache if it exists, otherwise load the data from the databases.
             cache_key = f"sim_{simulation_run_id}"
             if cache_key in streamlit.session_state.simulation_cache:
                 cached_data = streamlit.session_state.simulation_cache[cache_key]
@@ -118,6 +166,8 @@ class ResultUI:
                     simulation_run_id
                 )
 
+                progress_bar.progress(25)
+
                 # Connect to MongoDB to get movement data
                 mongo_service = MongoService(
                     server_number=selected_simulation["server_number"].iloc[0]
@@ -125,7 +175,6 @@ class ResultUI:
                 self.movement_data = mongo_service.get_movement_data(
                     start_timestamp=self.logs["timestamp"].min(),
                     end_timestamp=self.logs["timestamp"].max(),
-                    is_for_movement_visualisation=True,
                 )
 
                 # Cache the data in session state
@@ -144,26 +193,34 @@ class ResultUI:
             simulation_parameters = (
                 simulation_database.get_parameters_by_simulation_run(simulation_run_id)
             )
-            self.stations = self._parse_stations_from_string(
+
+            # Get the station coordinates from the simulation parameters saved.
+            self._parse_stations_from_string(
                 simulation_parameters["stations_string"].iloc[0]
             )
-            self._get_normal_operation_ranges(
+
+            # Get the normal operation and advance order ranges from the simulation
+            # parameters saved.
+            self._parse_normal_operation_ranges_from_string(
                 simulation_parameters["duration_string"].iloc[0],
                 log_start_timestamp,
             )
-            self.advance_order_ranges = self._parse_advance_order_ranges_from_string(
+            self._parse_advance_order_ranges_from_string(
                 simulation_parameters["duration_string"].iloc[0],
                 log_start_timestamp,
             )
 
             progress_bar.progress(75)
 
+            # Show the simulation durations as numbers
             streamlit.write("#### Simulation durations")
             self._show_simulation_durations()
 
+            # Show the bin presentation over time plot
             streamlit.write("#### Bin presentation over time")
             self._show_bin_presentation_over_time()
 
+            # Show the bin presentation rate by station plot with toggle
             streamlit.write("#### Bin presentation rate by station")
             is_normal_operation_only = streamlit.toggle(
                 "Show normal operation only",
@@ -175,6 +232,7 @@ class ResultUI:
             )
             progress_bar.progress(83)
 
+            # Show the bin handling rate by skycar plot with toggle
             streamlit.write("#### Bin handling rate by skycar")
             is_normal_operation_only = streamlit.toggle(
                 "Show normal operation only",
@@ -184,10 +242,10 @@ class ResultUI:
             self._show_handling_rate_statistics(
                 is_normal_operation_only=is_normal_operation_only
             )
-            progress_bar.progress(91)
 
             progress_bar.progress(100)
 
+            # Show the option to animate and download the animation
             self._show_skycar_visualisation(
                 simulation_name=selected_simulation["name"].iloc[0]
             )
@@ -200,159 +258,7 @@ class ResultUI:
             if mongo_service is not None:
                 mongo_service.close_connection()
 
-    def _show_skycar_visualisation(self, simulation_name: str):
-        streamlit.write("#### Skycar visualisation")
-        streamlit.write(
-            "Upload the original grid excel file, then choose the period of time (in "
-            + "simulation minutes) to animate. "
-        )
-        streamlit.write(
-            "The animation is sped up by 10x. In other words, 1 minute of animation is "
-            + "equivalent to 10 minutes of simulation. 1 minute of animation video "
-            + "generally takes about 1 minute to render."
-        )
-
-        grid_excel_file = streamlit.file_uploader(
-            "Upload grid excel.", key="grid_for_visualisation"
-        )
-        if grid_excel_file is None:
-            streamlit.info(
-                "Upload the original grid excel to visualise the skycar movements. "
-                + "Note that there is no validation here at the moment.",
-            )
-            grid_data = None
-            is_animate = False
-
-        else:
-            grid_data = pandas.read_excel(
-                grid_excel_file, header=0, index_col=0, dtype=str
-            )
-
-            # Drop first row and first column, following the template given
-            grid_data = grid_data.dropna(how="all", axis=0)
-            grid_data = grid_data.dropna(how="all", axis=1)
-
-            col1, col2 = streamlit.columns(2)
-            from_time_min = col1.number_input(
-                "From which simulation minute",
-                value=0,
-                min_value=0,
-                max_value=1000000,
-                step=1,
-            )
-            to_time_min = col2.number_input(
-                "To which simulation minute",
-                value=10,
-                min_value=0,
-                max_value=1000000,
-                step=1,
-            )
-
-            if from_time_min >= to_time_min:
-                streamlit.error("From time must be less than to time.", icon="❌")
-                return
-
-            is_animate = streamlit.button("Animate")
-
-        if is_animate:
-            streamlit.info(
-                "Please wait for the animation to render (estimated time of waiting: "
-                + f"{int((to_time_min-from_time_min)/10)+1} min)"
-            )
-
-            animation = Animation(
-                grid_data=grid_data,
-                movement_data=self.movement_data,
-                from_time_min=from_time_min,
-                to_time_min=to_time_min,
-            )
-
-            try:
-                # Ensure animation directory exists (important for cloud deployment)
-                animation_dir = "animation"
-                if not os.path.exists(animation_dir):
-                    os.makedirs(animation_dir, exist_ok=True)
-
-                # Try to save animation and handle potential errors
-                filename = f"{simulation_name}_{from_time_min}_{to_time_min}.mp4"
-                filename_with_path = f"animation/{filename}"
-                animation.animate(save_filename=filename_with_path)
-
-                if os.path.exists(filename_with_path):
-                    with open(filename_with_path, "rb") as file:
-                        animation_data = file.read()
-
-                    streamlit.download_button(
-                        label="Download Animation",
-                        data=animation_data,
-                        file_name=filename,
-                        mime="video/mp4",
-                        type="primary",
-                    )
-
-                    # Clean up the temporary file after reading
-                    try:
-                        os.remove(filename_with_path)
-                    except Exception as e:
-                        streamlit.warning(f"Could not clean up temporary file: {e}")
-
-                    streamlit.success("Animation generated and ready for download!")
-                else:
-                    streamlit.error(
-                        "Animation file was not created. This might be due to missing "
-                        + "dependencies or permissions."
-                    )
-
-            except Exception as e:
-                streamlit.error(f"Failed to generate animation: {str(e)}")
-                streamlit.info(
-                    "This might be due to missing FFmpeg or file system permissions in "
-                    + "the deployment environment."
-                )
-
-    def _parse_advance_order_ranges_from_string(
-        self, duration_string: str, simulation_start_timestamp: float
-    ) -> List[Tuple[float, float]]:
-        advance_order_ranges = []
-        current_time = simulation_start_timestamp
-
-        for segment in duration_string.split(";"):
-            if segment.startswith("AO"):
-                duration_seconds = float(segment[2:])
-                start_timestamp = current_time
-                end_timestamp = current_time + duration_seconds
-                advance_order_ranges.append((start_timestamp, end_timestamp))
-                current_time = end_timestamp
-            elif segment.startswith("N"):
-                duration_seconds = float(segment[1:])
-                current_time += duration_seconds
-
-        return advance_order_ranges
-
-    def _get_normal_operation_ranges(
-        self, duration_string: str, simulation_start_timestamp: float
-    ):
-
-        normal_operation_ranges = []
-        current_time = simulation_start_timestamp
-
-        for segment in duration_string.split(";"):
-            if segment.startswith("N"):
-                duration_seconds = float(segment[1:])
-                start_timestamp = current_time
-                end_timestamp = current_time + duration_seconds
-                normal_operation_ranges.append((start_timestamp, end_timestamp))
-                current_time = end_timestamp
-            elif segment.startswith("AO"):
-                duration_seconds = float(segment[2:])
-                current_time += duration_seconds
-
-        self.normal_operation_ranges = normal_operation_ranges
-        self.normal_operation_duration_in_hours = sum(
-            (end - start) / 3600 for start, end in normal_operation_ranges
-        )
-
-    def _parse_stations_from_string(self, station_string: str) -> List[Station]:
+    def _parse_stations_from_string(self, station_string: str):
         """
         Parse a string representation of stations into a list of Station objects.
 
@@ -363,6 +269,11 @@ class ResultUI:
         - D(x1y44): Drop coordinates (x=1, y=44)
         - P(x1y44): Pick coordinates (x=1, y=44)
         - Stations are separated by semicolons
+
+        Parameters
+        ----------
+        station_string : str
+            The string representation of the stations.
         """
         stations = []
 
@@ -417,9 +328,87 @@ class ResultUI:
             station = Station(code, type_, drop_coords, pick_coords)
             stations.append(station)
 
-        return stations
+        self.stations = stations
+
+    def _parse_normal_operation_ranges_from_string(
+        self, duration_string: str, simulation_start_timestamp: float
+    ):
+        """
+        Parse a duration string into a list of normal operation ranges.
+
+        Example input: "N100;AO1000"
+
+        Where:
+        - N100: Normal operation for 100 seconds
+        - AO1000: Advance order for 1000 seconds
+
+        Parameters
+        ----------
+        duration_string : str
+            The string representation of the duration.
+        simulation_start_timestamp : float
+            The start timestamp of the simulation.
+        """
+        normal_operation_ranges = []
+        current_time = simulation_start_timestamp
+
+        for segment in duration_string.split(";"):
+            if segment.startswith("N"):
+                duration_seconds = float(segment[1:])
+                start_timestamp = current_time
+                end_timestamp = current_time + duration_seconds
+                normal_operation_ranges.append((start_timestamp, end_timestamp))
+                current_time = end_timestamp
+
+            elif segment.startswith("AO"):
+                duration_seconds = float(segment[2:])
+                current_time += duration_seconds
+
+        self.normal_operation_ranges = normal_operation_ranges
+        self.normal_operation_duration_in_hours = sum(
+            (end - start) / 3600 for start, end in normal_operation_ranges
+        )
+
+    def _parse_advance_order_ranges_from_string(
+        self, duration_string: str, simulation_start_timestamp: float
+    ):
+        """
+        Parse a duration string into a list of advance order ranges.
+
+        Example input: "AO1000;N100"
+
+        Where:
+        - AO1000: Advance order for 1000 seconds
+        - N100: Normal operation for 100 seconds
+
+        Parameters
+        ----------
+        duration_string : str
+            The string representation of the duration.
+        simulation_start_timestamp : float
+            The start timestamp of the simulation.
+        """
+        advance_order_ranges = []
+        current_time = simulation_start_timestamp
+
+        for segment in duration_string.split(";"):
+            if segment.startswith("AO"):
+                duration_seconds = float(segment[2:])
+                start_timestamp = current_time
+                end_timestamp = current_time + duration_seconds
+                advance_order_ranges.append((start_timestamp, end_timestamp))
+                current_time = end_timestamp
+
+            elif segment.startswith("N"):
+                duration_seconds = float(segment[1:])
+                current_time += duration_seconds
+
+        self.advance_order_ranges = advance_order_ranges
 
     def _show_simulation_durations(self):
+        """
+        Show the simulation durations as numbers.
+        """
         col1, col2 = streamlit.columns(2)
         col1.metric(
             "Whole simulation",
@@ -432,6 +421,14 @@ class ResultUI:
 
     @staticmethod
     def _convert_to_readable_time(input_hours: float) -> str:
+        """
+        Convert a number of hours to a readable time string.
+
+        Parameters
+        ----------
+        input_hours : float
+            The number of hours to convert.
+        """
         hours = int(input_hours)
         minutes = int(input_hours * 60 % 60)
 
@@ -439,8 +436,155 @@ class ResultUI:
         minutes_text = f"{minutes}m" if minutes > 0 else ""
         return f"{hours_text} {minutes_text}"
 
+    def _show_bin_presentation_over_time(self):
+        """
+        Show the bin presentation over time plot.
+        """
+        # Toggle to choose bin size (30 minutes or 1 hour)
+        bin_size = streamlit.radio(
+            "Select bin size",
+            ["30 minutes", "1 hour"],
+            index=0,
+            key="bin_size_radio",
+            horizontal=True,
+        )
+        bin_size_minutes = 60 if bin_size == "1 hour" else 30
+
+        bin_stored_logs = self.logs[self.logs["action"] == "Bin stored"].copy()
+        if bin_stored_logs.empty:
+            streamlit.warning("No stored bins in this simulation yet.")
+            return
+
+        log_start_timestamp = self.logs["timestamp"].min()
+        bin_stored_logs["duration_minutes"] = (
+            bin_stored_logs["timestamp"] - log_start_timestamp
+        ) / 60
+        bin_stored_logs["interval_minutes"] = (
+            (bin_stored_logs["duration_minutes"] // bin_size_minutes) * bin_size_minutes
+        ).astype(int)
+
+        # Group by interval and station_code, then count occurrences
+        interval_station_counts = (
+            bin_stored_logs.groupby(["interval_minutes", "station_code"])
+            .size()
+            .reset_index(name="count")
+        )
+
+        # Get all unique intervals and stations for complete data
+        max_interval = bin_stored_logs["interval_minutes"].max()
+        all_intervals = list(
+            range(
+                0,
+                int(max_interval) + bin_size_minutes,
+                bin_size_minutes,
+            )
+        )
+        all_stations = sorted([station.code for station in self.stations])
+
+        # Create a complete data frame with all intervals and stations.
+        complete_data = []
+        for interval in all_intervals:
+            for station in all_stations:
+                matching_rows = interval_station_counts[
+                    (interval_station_counts["interval_minutes"] == interval)
+                    & (interval_station_counts["station_code"] == station)
+                ]
+                count_value = (
+                    matching_rows["count"].iloc[0] if not matching_rows.empty else 0
+                )
+                complete_data.append(
+                    {
+                        "interval_minutes": interval,
+                        "station_code": station,
+                        "count": count_value,
+                    }
+                )
+        complete_df = pandas.DataFrame(complete_data)
+
+        # Create stacked bar chart
+        fig = go.Figure()
+
+        # Convert all intervals to hours for consistent x-axis
+        all_intervals_hours = [interval / 60 for interval in all_intervals]
+
+        # Add a bar trace for each station
+        for station in all_stations:
+            station_data = complete_df[complete_df["station_code"] == station]
+
+            # Sort by interval to ensure proper order
+            station_data = station_data.sort_values("interval_minutes")
+
+            # Convert minutes to hours for x-axis display
+            x_values = (station_data["interval_minutes"] + bin_size_minutes / 2) / 60
+            y_values = station_data["count"]
+
+            # Only show text labels for non-zero values to avoid clutter
+            text_values = [str(count) if count > 0 else "" for count in y_values]
+
+            fig.add_trace(
+                go.Bar(
+                    name=f"Station {station}",
+                    x=x_values,
+                    y=y_values,
+                    text=text_values,
+                    textposition="auto",
+                    width=bin_size_minutes / 60 * 0.9,
+                )
+            )
+
+        # Add advance order period highlights
+        log_start_timestamp = self.logs["timestamp"].min()
+        y_max = complete_df.groupby("interval_minutes")["count"].sum().max()
+        if y_max > 0:
+            for start_ts, end_ts in self.advance_order_ranges:
+                # Convert timestamps to duration from start in hours
+                start_hours = (start_ts - log_start_timestamp) / 3600
+                end_hours = (end_ts - log_start_timestamp) / 3600
+                fig.add_vrect(
+                    x0=start_hours,
+                    x1=end_hours,
+                    fillcolor="red",
+                    opacity=0.2,
+                    layer="below",
+                    line_width=0,
+                )
+
+        fig.update_layout(
+            xaxis_title="Duration from start (hours)",
+            yaxis_title="Bin Count",
+            barmode="stack",
+            xaxis=dict(
+                tickmode="linear",
+                tick0=all_intervals_hours[0],
+                dtick=bin_size_minutes / 60,
+                range=[
+                    all_intervals_hours[0] - bin_size_minutes * 0.2 / 60,
+                    all_intervals_hours[-1] + bin_size_minutes * 1.2 / 60,
+                ],
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+            ),
+            hovermode="x unified",
+        )
+
+        streamlit.plotly_chart(fig, use_container_width=True)
+
     def _show_station_statistics(self, is_normal_operation_only: bool):
-        # Filter logs for 'Bin stored' actions and compute bin presentation rates in one step
+        """
+        Show the bin presentation rate by station plot.
+
+        Parameters
+        ----------
+        is_normal_operation_only : bool
+            Whether to show the statistics for normal operations only.
+        """
+        # Filter logs for 'Bin stored' actions and compute bin presentation rates in one
+        # step
         if is_normal_operation_only:
             logs = pandas.DataFrame()
             for start, end in self.normal_operation_ranges:
@@ -458,12 +602,14 @@ class ResultUI:
             logs = self.logs
             duration_in_hours = self.duration_in_hours
 
+        # Sometimes early in the simulation, there are no logs.
         if logs.empty:
             streamlit.warning(
                 "No simulation logs from normal operations in this simulation."
             )
             return
 
+        # Count the number of bins stored by station
         station_counts = (
             logs[logs["action"] == "Bin stored"]
             .groupby("station_code")
@@ -477,7 +623,7 @@ class ResultUI:
             drop=True
         )
 
-        # Create station type mapping and apply it efficiently
+        # Create station type mapping
         station_types = {station.code: station.type for station in self.stations}
         station_counts["type"] = station_counts["station_code"].map(station_types)
 
@@ -561,7 +707,6 @@ class ResultUI:
             },
             index=["Inbound rate (bins/hour)", "Outbound rate (bins/hour)"],
         )
-
         streamlit.dataframe(
             rates_df,
             use_container_width=True,
@@ -569,8 +714,17 @@ class ResultUI:
         )
 
     def _show_handling_rate_statistics(self, is_normal_operation_only: bool):
+        """
+        Show the bin handling rate by skycar plot.
+
+        Parameters
+        ----------
+        is_normal_operation_only : bool
+            Whether to show the statistics for normal operations only.
+        """
+        # Filter movement data to only include records within normal operation time
+        # ranges
         if is_normal_operation_only:
-            # Filter movement data to only include records within normal operation time ranges
             movement_data = pandas.DataFrame()
             for start, end in self.normal_operation_ranges:
                 filtered_data = self.movement_data[
@@ -583,6 +737,7 @@ class ResultUI:
             movement_data = self.movement_data
             duration_in_hours = self.duration_in_hours
 
+        # Sometimes early in the simulation, there are no movement data.
         if movement_data.empty:
             streamlit.warning(
                 "No skycar movement data from normal operations in this simulation."
@@ -619,8 +774,8 @@ class ResultUI:
         for skycar in skycar_ids:
             skycar_data = skycar_data_by_id[skycar]
 
-            # Filter actions first
-            # Create masks for LOGO and LOGC actions with their timestamps
+            # Filter actions first. Create masks for LOGO and LOGC actions with their
+            # timestamps
             logo_actions = skycar_data["action"].str.startswith("LOGO")
             logc_actions = skycar_data["action"].str.startswith("LOGC")
             logo_timestamps = skycar_data.loc[logo_actions, "completed_at"]
@@ -648,7 +803,8 @@ class ResultUI:
             )
             putaway_rates.append(putaway / duration_in_hours)
 
-            # Calculate internal rate (remaining LOGO operations)
+            # Calculate internal rate during normal operations (from remaining LOGO
+            # operations)
             total_logo = len(logo_timestamps)
             logo_in_normal_operations = sum(
                 1
@@ -657,6 +813,9 @@ class ResultUI:
             )
             internal_normal = logo_in_normal_operations - retrieving - putaway
             internal_normal_rates.append(internal_normal / duration_in_hours)
+
+            # Calculate internal rate during advance order operations (same thing but at
+            # advance order ranges)
             internal_advance_rates.append(
                 (total_logo - logo_in_normal_operations) / duration_in_hours
             )
@@ -739,144 +898,125 @@ class ResultUI:
                 " ➨ Internal rate - advance ops. (bins/hour)",
             ],
         )
-
         streamlit.dataframe(
             rates_df,
             use_container_width=True,
             hide_index=False,
         )
 
-    def _show_bin_presentation_over_time(self):
-        # Toggle to choose bin size (30 minutes or 1 hour)
-        bin_size = streamlit.radio(
-            "Select bin size",
-            ["30 minutes", "1 hour"],
-            index=0,
-            key="bin_size_radio",
-            horizontal=True,
+    def _show_skycar_visualisation(self, simulation_name: str):
+        """
+        Show the UI to choose the visualisation duration and download the animation.
+
+        Parameters
+        ----------
+        simulation_name : str
+            The name of the simulation.
+        """
+        streamlit.write("#### Skycar visualisation")
+        streamlit.write(
+            "Upload the original grid excel file, then choose the period of time (in "
+            + "simulation minutes) to animate. "
         )
-        bin_size_minutes = 60 if bin_size == "1 hour" else 30
-
-        bin_stored_logs = self.logs[self.logs["action"] == "Bin stored"].copy()
-
-        if bin_stored_logs.empty:
-            streamlit.warning("No stored bins in this simulation yet.")
-            return
-
-        log_start_timestamp = self.logs["timestamp"].min()
-        bin_stored_logs["duration_minutes"] = (
-            bin_stored_logs["timestamp"] - log_start_timestamp
-        ) / 60
-        bin_stored_logs["interval_minutes"] = (
-            (bin_stored_logs["duration_minutes"] // bin_size_minutes) * bin_size_minutes
-        ).astype(int)
-
-        # Group by interval and station_code, then count occurrences
-        interval_station_counts = (
-            bin_stored_logs.groupby(["interval_minutes", "station_code"])
-            .size()
-            .reset_index(name="count")
+        streamlit.write(
+            "The animation is sped up by 10x. In other words, 1 minute of animation is "
+            + "equivalent to 10 minutes of simulation. 1 minute of animation video "
+            + "generally takes about 1 minute to render."
         )
 
-        # Get all unique intervals and stations for complete data
-        max_interval = bin_stored_logs["interval_minutes"].max()
-        all_intervals = list(
-            range(
-                0,
-                int(max_interval) + bin_size_minutes,
-                bin_size_minutes,
+        grid_excel_file = streamlit.file_uploader(
+            "Upload grid excel.", key="grid_for_visualisation"
+        )
+        if grid_excel_file is None:
+            streamlit.info(
+                "Upload the original grid excel to visualise the skycar movements. "
+                + "Note that there is no validation here at the moment.",
             )
-        )
-        all_stations = sorted([station.code for station in self.stations])
-
-        complete_data = []
-        for interval in all_intervals:
-            for station in all_stations:
-                matching_rows = interval_station_counts[
-                    (interval_station_counts["interval_minutes"] == interval)
-                    & (interval_station_counts["station_code"] == station)
-                ]
-                count_value = (
-                    matching_rows["count"].iloc[0] if not matching_rows.empty else 0
-                )
-                complete_data.append(
-                    {
-                        "interval_minutes": interval,
-                        "station_code": station,
-                        "count": count_value,
-                    }
-                )
-
-        complete_df = pandas.DataFrame(complete_data)
-
-        # Create stacked bar chart
-        fig = go.Figure()
-
-        # Convert all intervals to hours for consistent x-axis
-        all_intervals_hours = [interval / 60 for interval in all_intervals]
-
-        # Add a bar trace for each station
-        for station in all_stations:
-            station_data = complete_df[complete_df["station_code"] == station]
-            # Sort by interval to ensure proper order
-            station_data = station_data.sort_values("interval_minutes")
-
-            # Convert minutes to hours for x-axis display
-            x_values = (station_data["interval_minutes"] + bin_size_minutes / 2) / 60
-            y_values = station_data["count"]
-
-            # Only show text labels for non-zero values to avoid clutter
-            text_values = [str(count) if count > 0 else "" for count in y_values]
-
-            fig.add_trace(
-                go.Bar(
-                    name=f"Station {station}",
-                    x=x_values,
-                    y=y_values,
-                    text=text_values,
-                    textposition="auto",
-                    width=bin_size_minutes / 60 * 0.9,
-                )
+            grid_data = None
+            is_animate = False
+        else:
+            grid_data = pandas.read_excel(
+                grid_excel_file, header=0, index_col=0, dtype=str
             )
 
-        # Add advance order period highlights
-        log_start_timestamp = self.logs["timestamp"].min()
-        y_max = complete_df.groupby("interval_minutes")["count"].sum().max()
-        if y_max > 0:
-            for start_ts, end_ts in self.advance_order_ranges:
-                # Convert timestamps to duration from start in hours
-                start_hours = (start_ts - log_start_timestamp) / 3600
-                end_hours = (end_ts - log_start_timestamp) / 3600
-                fig.add_vrect(
-                    x0=start_hours,
-                    x1=end_hours,
-                    fillcolor="red",
-                    opacity=0.2,
-                    layer="below",
-                    line_width=0,
+            # Drop first row and first column, following the template given
+            grid_data = grid_data.dropna(how="all", axis=0)
+            grid_data = grid_data.dropna(how="all", axis=1)
+
+            col1, col2 = streamlit.columns(2)
+            from_time_min = col1.number_input(
+                "From which simulation minute",
+                value=0,
+                min_value=0,
+                max_value=1000000,
+                step=1,
+            )
+            to_time_min = col2.number_input(
+                "To which simulation minute",
+                value=10,
+                min_value=0,
+                max_value=1000000,
+                step=1,
+            )
+
+            if from_time_min >= to_time_min:
+                streamlit.error("From time must be less than to time.", icon="❌")
+                return
+
+            is_animate = streamlit.button("Animate")
+
+        if is_animate:
+            streamlit.info(
+                "Please wait for the animation to render (estimated time of waiting: "
+                + f"{int((to_time_min-from_time_min)/10)+1} min)"
+            )
+            animation = Animation(
+                grid_data=grid_data,
+                movement_data=self.movement_data,
+                from_time_min=from_time_min,
+                to_time_min=to_time_min,
+            )
+
+            try:
+                # Ensure animation directory exists (important for cloud deployment)
+                animation_dir = "animation"
+                if not os.path.exists(animation_dir):
+                    os.makedirs(animation_dir, exist_ok=True)
+
+                # Try to save animation and handle potential errors
+                filename = f"{simulation_name}_{from_time_min}_{to_time_min}.mp4"
+                filename_with_path = f"animation/{filename}"
+                animation.animate(save_filename=filename_with_path)
+
+                # Show a download button if the animation file exists
+                if os.path.exists(filename_with_path):
+                    with open(filename_with_path, "rb") as file:
+                        animation_data = file.read()
+
+                    streamlit.download_button(
+                        label="Download Animation",
+                        data=animation_data,
+                        file_name=filename,
+                        mime="video/mp4",
+                        type="primary",
+                    )
+
+                    # Clean up the temporary file after reading
+                    try:
+                        os.remove(filename_with_path)
+                    except Exception as e:
+                        streamlit.warning(f"Could not clean up temporary file: {e}")
+
+                    streamlit.success("Animation generated and ready for download!")
+                else:
+                    streamlit.error(
+                        "Animation file was not created. This might be due to missing "
+                        + "dependencies or permissions."
+                    )
+
+            except Exception as e:
+                streamlit.error(f"Failed to generate animation: {str(e)}")
+                streamlit.info(
+                    "This might be due to missing FFmpeg or file system permissions in "
+                    + "the deployment environment."
                 )
-
-        fig.update_layout(
-            xaxis_title="Duration from start (hours)",
-            yaxis_title="Bin Count",
-            barmode="stack",
-            xaxis=dict(
-                tickmode="linear",
-                tick0=all_intervals_hours[0],
-                dtick=bin_size_minutes / 60,
-                range=[
-                    all_intervals_hours[0] - bin_size_minutes * 0.2 / 60,
-                    all_intervals_hours[-1] + bin_size_minutes * 1.2 / 60,
-                ],
-            ),
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1,
-            ),
-            hovermode="x unified",
-        )
-
-        streamlit.plotly_chart(fig, use_container_width=True)

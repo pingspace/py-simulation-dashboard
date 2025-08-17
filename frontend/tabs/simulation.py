@@ -4,6 +4,9 @@ from ui_components import GridDesignerUI, SimulationInputUI, SimulationPreparati
 
 
 def simulation_tab():
+    """
+    The tab to process simulation input and run the simulation.
+    """
     grid_designer_ui = GridDesignerUI()
     is_grid_designer_ui_success = grid_designer_ui.show()
 

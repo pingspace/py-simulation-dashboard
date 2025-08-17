@@ -1,20 +1,36 @@
-from typing import List, Optional
-import pandas
-from sqlalchemy import create_engine, text, Column, Integer, String, Float
-from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy.exc import SQLAlchemyError
+from urllib.parse import quote_plus
+
 from config import (
     SIMULATION_DATABASE_HOST,
+    SIMULATION_DATABASE_PASSWORD,
     SIMULATION_DATABASE_PORT,
     SIMULATION_DATABASE_USER,
-    SIMULATION_DATABASE_PASSWORD,
 )
-from urllib.parse import quote_plus
+from sqlalchemy import Column, Float, Integer, String, create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 Base = declarative_base()
 
 
 class SimulationRun(Base):
+    """
+    Table to store simulation run information.
+
+    Attributes
+    ----------
+    id : int
+        The ID of the simulation run. It is incremented automatically.
+    name : str
+        The name of the simulation run.
+    server_number : int
+        The server number of the simulation run; either 1 or 2.
+    start_timestamp : float
+        The UNIX timestamp of the start of the simulation.
+    end_timestamp : float
+        The UNIX timestamp of the end of the simulation.
+    """
+
     __tablename__ = "simulation_runs"
 
     id = Column(Integer, primary_key=True)
@@ -25,6 +41,27 @@ class SimulationRun(Base):
 
 
 class Log(Base):
+    """
+    Table to store the simulation logs
+
+    Attributes
+    ----------
+    id : int
+        The ID of the log entry. It is incremented automatically.
+    timestamp : float
+        The UNIX timestamp of the log entry.
+    simulation_run_id : int
+        The ID of the simulation run that the log belongs to.
+    action : str
+        The action that was performed.
+    station_code : int
+        The code of the station that the log belongs to. If null, the log is not
+        associated with a station.
+    bin_code : int
+        The code of the bin that the log belongs to. If null, the log is not
+        associated with a bin.
+    """
+
     __tablename__ = "logs"
 
     id = Column(Integer, primary_key=True)
@@ -36,8 +73,11 @@ class Log(Base):
 
 
 class SimulationDatabase:
+    """
+    Class related to interacting with the simulation database.
+    """
+
     def __init__(self):
-        # URL encode the username and password to handle special characters
         database_url = (
             f"postgresql://{quote_plus(SIMULATION_DATABASE_USER)}:{quote_plus(SIMULATION_DATABASE_PASSWORD)}"
             f"@{SIMULATION_DATABASE_HOST}:{SIMULATION_DATABASE_PORT}/matrix_simulation"
@@ -47,51 +87,29 @@ class SimulationDatabase:
         self.session = Session()
         Base.metadata.create_all(self.engine)
 
-    def get_all_tables(self) -> List[str]:
-        """Returns a list of all table names in the database."""
-        query = text(
-            """
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_schema = 'public'
-        """
-        )
-        result = self.session.execute(query)
-        return [row[0] for row in result]
-
-    def get_all_simulation_runs(self) -> pandas.DataFrame:
-        """Retrieves all simulation runs from the database."""
-        try:
-            result = (
-                self.session.query(SimulationRun)
-                .order_by(SimulationRun.start_timestamp.desc())
-                .all()
-            )
-            data = [
-                (r.id, r.name, r.server_number, r.start_timestamp, r.end_timestamp)
-                for r in result
-            ]
-            return pandas.DataFrame(
-                data,
-                columns=[
-                    "id",
-                    "name",
-                    "server_number",
-                    "start_timestamp",
-                    "end_timestamp",
-                ],
-            )
-        except SQLAlchemyError as e:
-            print(f"Error fetching simulation runs: {e}")
-            return pandas.DataFrame()
-
     def update_simulation_run_timestamp(
         self,
         simulation_run_id: int,
         start_timestamp: float = None,
         end_timestamp: float = None,
     ) -> bool:
-        """Updates the end timestamp for a simulation run."""
+        """
+        Update the start or end timestamp for a simulation run.
+
+        Parameters
+        ----------
+        simulation_run_id : int
+            The ID of the simulation run.
+        start_timestamp : float, optional
+            The start timestamp of the simulation run, by default None.
+        end_timestamp : float, optional
+            The end timestamp of the simulation run, by default None.
+
+        Returns
+        -------
+        bool
+            True if the timestamp is updated successfully, False otherwise.
+        """
         try:
             sim_run = (
                 self.session.query(SimulationRun)
@@ -119,10 +137,30 @@ class SimulationDatabase:
         timestamp: float,
         simulation_run_id: int,
         action: str,
-        station_code: Optional[int] = None,
-        bin_code: Optional[int] = None,
+        station_code: int | None = None,
+        bin_code: int | None = None,
     ) -> bool:
-        """Logs an action to the simulation logs table."""
+        """
+        Log an action to the simulation logs table.
+
+        Parameters
+        ----------
+        timestamp : float
+            The timestamp of the action.
+        simulation_run_id : int
+            The ID of the simulation run.
+        action : str
+            The action that was performed.
+        station_code : int, optional
+            The code of the station that the action belongs to, by default None.
+        bin_code : int, optional
+            The code of the bin that the action belongs to, by default None.
+
+        Returns
+        -------
+        bool
+            True if the action is logged successfully, False otherwise.
+        """
         try:
             log = Log(
                 timestamp=timestamp,
@@ -139,34 +177,9 @@ class SimulationDatabase:
             self.session.rollback()
             return False
 
-    def get_logs(self, simulation_run_id: Optional[int] = None) -> pandas.DataFrame:
-        """Retrieves simulation logs as a pandas DataFrame."""
-        try:
-            query = self.session.query(Log)
-            if simulation_run_id is not None:
-                query = query.filter_by(simulation_run_id=simulation_run_id)
-            query = query.order_by(Log.timestamp)
-
-            result = query.all()
-            data = [
-                (r.timestamp, r.simulation_run_id, r.action, r.station_code, r.bin_code)
-                for r in result
-            ]
-            return pandas.DataFrame(
-                data,
-                columns=[
-                    "timestamp",
-                    "simulation_run_id",
-                    "action",
-                    "station_code",
-                    "bin_code",
-                ],
-            )
-        except SQLAlchemyError as e:
-            print(f"Error retrieving logs: {e}")
-            return pandas.DataFrame()
-
     def close_connection(self):
-        """Closes the database connection."""
+        """
+        Close the database connection.
+        """
         self.session.close()
         self.engine.dispose()

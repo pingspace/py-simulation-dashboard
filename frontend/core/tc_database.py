@@ -1,4 +1,3 @@
-from curses.ascii import SI
 import pandas
 from core.config import (
     MONGO_HOST_1,
@@ -8,8 +7,8 @@ from core.config import (
     MONGO_PASSWORD,
     MONGO_USER,
 )
-from pymongo import MongoClient
 from core.exception import SimulationFrontendException
+from pymongo import MongoClient
 
 
 class MongoService:
@@ -192,9 +191,9 @@ class MongoService:
         simulation_start_timestamp = df["completed_at"].min()
 
         # For the time of beginning of an entry, we just take the shift of the whole
-        # dataset of a given skycar_id because LOG entries are the time when the 
-        # instruction is received. 
-        # For the very first entry of a given skycar_id, we assume that the message was 
+        # dataset of a given skycar_id because LOG entries are the time when the
+        # instruction is received.
+        # For the very first entry of a given skycar_id, we assume that the message was
         # received at the start of the simulation, minus 1 second as buffer.
         df["begin_at"] = df.groupby("skycar_id")["completed_at"].shift(1)
         df.loc[df["begin_at"].isna(), "begin_at"] = simulation_start_timestamp - 1

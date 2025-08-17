@@ -5,20 +5,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy
 import requests
+from config import SM_BASE_1, SM_BASE_2, TC_BASE_1, TC_BASE_2
 from exception import SimulationBackendException
 from job_request import JobsCreationRequest
 from simulation_database import SimulationDatabase
 
-SM_BASE_1 = "http://18.138.163.62:3020"
-TC_BASE_1 = "http://13.228.83.247:3030"
-
-SM_BASE_2 = "http://18.138.163.62:3120/"
-TC_BASE_2 = "http://13.228.83.247:3033/"
-
 
 class Station:
     """
-    Station class.
+    Station class in simulation backend.
 
     Attributes
     ----------
@@ -27,9 +22,12 @@ class Station:
     type : str
         The type of the station, either "I" (inbound) or "O" (outbound)
     bins : List[Dict[str, Any]]
-        The list of bins assigned to the station
-    next_job_time : float
-        The time of the next job for the station
+        The list of bins assigned to the station. Bins are represented as dictionaries.
+    next_job_time : float, optional
+        The time of the next job for the station, by default 0.
+    advance_order_name : str, optional
+        The name of the advance order for the station. Can be None if the station is
+        not assigned to an advance order. By default None.
     """
 
     def __init__(
@@ -49,6 +47,22 @@ class Station:
 
 class StationGroup:
     def __init__(self, group: int, stations: List[Station]):
+        """
+        Station group class in simulation backend. A group of two stations will share
+        the same order. They must be of the same type.
+
+        Attributes
+        ----------
+        type : str
+            Type of the station group. Either "I" (inbound) or "O" (outbound).
+
+        Parameters
+        ----------
+        group : int
+            The group index of the station group.
+        stations : List[Station]
+            The list of stations in the group.
+        """
         self.group = group
         self.stations = stations
         self.type = stations[0].type
@@ -56,16 +70,14 @@ class StationGroup:
 
 class JobService:
     """
-    JobService class.
+    The main class to run the job creation in simulation.
 
-    Attributes
+    Parameters
     ----------
-    body : JobsCreationRequest
+    jobs_creation_request : JobsCreationRequest
         The request body
-    status : Dict[str, Any]
+    job_creation_status : Dict[str, Any]
         The status of the job creation
-    SM_BASE : str
-        The base URL of the simulation server
     """
 
     def __init__(
@@ -83,9 +95,9 @@ class JobService:
         """
         The main method that runs the job creation in simulation.
         """
+        # Get simulation run ID and update the start timestamp
         self.simulation_database = SimulationDatabase()
         self.simulation_run_id = self.body.configuration.id
-
         simulation_start_time = time.time()
         self.simulation_database.update_simulation_run_timestamp(
             simulation_run_id=self.simulation_run_id,
@@ -123,21 +135,22 @@ class JobService:
             )
             for segment in self.body.configuration.duration_string.split(";")
         ]
+        total_simulation_duration = sum(operation[1] for operation in self.operations)
 
-        # Initialize current time and check time interval
+        # Initialise current time and check time interval. Interval is set to 1 second.
         next_check_time = time.time()
         check_time_interval = 1.0
 
-        # current_operation_index = 0
-        normal_operation_loop_index = 0
-
+        # Initialise empty dictionaries to store advance orders for inbound and outbound
         inbound_advance_orders = {}
         outbound_advance_orders = {}
 
+        # Count the loop index over a normal operation range, because we need to know
+        # when is the first loop in each normal operation.
+        normal_operation_loop_index = 0
+
         is_all_orders_completed = True
         is_normal_operation_ending = False
-
-        total_simulation_duration = sum(operation[1] for operation in self.operations)
 
         # Main loop that runs until the stop request is made or the simulation duration
         # is reached
@@ -147,10 +160,13 @@ class JobService:
         ):
             loop_start_time = time.time()
 
+            # Get whether the current operation is advance order or normal operation
             current_operation, current_operation_index = self._get_current_operation()
             current_operation_type, current_operation_duration = current_operation
 
-            # Advance order
+            # Advance order operation. Activates when it is advance order operation time
+            # and if previous remaining orders are completed (if any from the normal
+            # operation one before).
             if (
                 current_operation_type == "AO"
                 and is_all_orders_completed
@@ -158,6 +174,8 @@ class JobService:
             ):
                 self._log("Advance order starts")
 
+                # Get the remaining duration of the current advance order operation, in
+                # case it is cut short due to remaining previous normal operation orders.
                 remaining_duration = max(
                     simulation_start_time
                     + self._get_duration_up_to_current_operation(
@@ -167,7 +185,7 @@ class JobService:
                     1,
                 )
 
-                # Find the bins to be called for advance orders
+                # Calculate the number of orders to be called for advance orders operation
                 number_of_inbound_orders_for_AO = math.ceil(
                     self.body.parameters.inbound_orders_per_hour
                     * (remaining_duration / 3600)
@@ -177,6 +195,7 @@ class JobService:
                     * (remaining_duration / 3600)
                 )
 
+                # Create advance inbound orders
                 self._log(
                     f"Number of inbound advance orders: {number_of_inbound_orders_for_AO}"
                 )
@@ -185,6 +204,7 @@ class JobService:
                     number_of_bins_per_order=self.body.parameters.inbound_bins_per_order,
                 )
 
+                # Create advance outbound orders
                 self._log(
                     f"Number of outbound advance orders: {number_of_outbound_orders_for_AO}"
                 )
@@ -213,16 +233,20 @@ class JobService:
                     f"Advance order ends in {int(next_check_time - time.time())} seconds"
                 )
 
-            # Normal operation
+            # Normal operation. Activates when it is normal operation time or if we are
+            # actually in advance order operation but with remaining normal operation
+            # orders to be completed.
             elif (
                 current_operation_type == "N" or not is_all_orders_completed
             ) and loop_start_time >= next_check_time:
+
+                # Keep track of the start time of normal operation
                 if normal_operation_loop_index == 0 and current_operation_type == "N":
                     normal_operation_start_time = loop_start_time
                     is_normal_operation_ending = False
                     self._log("Normal operation starts")
 
-                # for station in station_list:
+                # Iterate through all station groups
                 for station_group in station_groups:
                     advance_orders = (
                         inbound_advance_orders
@@ -230,15 +254,20 @@ class JobService:
                         else outbound_advance_orders
                     )
 
+                    # Check if all the stations in the group (may have one or two
+                    # stations for now) have empty list of bins.
                     is_all_stations_in_group_empty = all(
                         len(station.bins) == 0 for station in station_group.stations
                     )
 
+                    # If the station group has no bins to be processed, and we are in
+                    # normal operation, then we assign bins to the station group. Skip
+                    # if we are actually in advance order operation.
                     if is_all_stations_in_group_empty and current_operation_type == "N":
                         number_of_stations_in_group = len(station_group.stations)
 
-                        # If there are advance orders for the group, assign the bins to
-                        # the stations on an equal basis
+                        # If there are advance orders queued for the group, assign the
+                        # bins to the stations on an equal basis
                         if len(advance_orders) > 0:
 
                             # Get the first advance order from the dictionary
@@ -248,6 +277,7 @@ class JobService:
                                 len(order_to_share) / number_of_stations_in_group
                             )
 
+                            # Divide the bins equally among the stations
                             for station in station_group.stations:
                                 station.bins = order_to_share[
                                     :number_of_bins_per_station
@@ -257,19 +287,22 @@ class JobService:
                                 ]
                                 station.advance_order_name = order_name
 
+                            # Remove this advance order from the dictionary after
+                            # assigning to the stations
                             advance_orders.pop(order_name)
 
-                        # If there are no more bins for the station, find new bins and call
-                        # them from the matrix
+                        # If there are no more bins for the station, and there is no more
+                        # advance orders to be assigned, then we find new bins and call
+                        # them from the matrix.
                         else:
                             number_of_bins = self._get_number_of_bins_per_order(
                                 station_type=station_group.type
                             )
-
                             number_of_bins_per_station = math.ceil(
                                 number_of_bins / number_of_stations_in_group
                             )
 
+                            # Get the divided number of bins per station separately
                             remaining_bins = number_of_bins
                             for station in station_group.stations:
                                 station.bins = self._get_bins_from_order(
@@ -279,12 +312,12 @@ class JobService:
                                     station_code=station.code,
                                 )
                                 station.advance_order_name = None
-
                                 remaining_bins = max(
                                     0, remaining_bins - number_of_bins_per_station
                                 )
 
-                        # Call bins from matrix to the station
+                        # After assigning bins to the stations, call the bins from the
+                        # matrix to the stations
                         for station in station_group.stations:
                             bin_ids = [bin["code"] for bin in station.bins]
                             _ = self._call_bins(
@@ -293,15 +326,16 @@ class JobService:
                                 advance_order_name=station.advance_order_name,
                             )
 
-                    # During advance order operation but with remaining normal operation
-                    # orders, we don't need to check station status. We just skip until
-                    # all orders from all stations are completed.
+                    # During actual advance order operation but with remaining normal
+                    # operation orders, we don't need to check station status. We just
+                    # skip until all orders from all stations are completed.
                     if all(
                         len(station.bins) == 0 for station in station_group.stations
                     ):
                         continue
 
-                    # Check station status at intervals to see if a bin is at station
+                    # Check station status at intervals to see if a bin has been moved to
+                    # the station in the station group
                     for station in station_group.stations:
                         station_status = self._check_station_status(station.code)
                         status_with_bin_at_station = next(
@@ -354,19 +388,22 @@ class JobService:
 
                             station.bins.remove(bin_to_remove)
 
+                # Update the next check time and normal operation loop index
                 next_check_time = loop_start_time + check_time_interval
                 normal_operation_loop_index += (
                     1 if not is_normal_operation_ending else 0
                 )
 
+                # Check if all orders are completed. Normally will overspill to the next
+                # operation range, which can only be advance order operation for now.
                 is_all_orders_completed = (
                     all(len(station.bins) == 0 for station in station_list)
                     and current_operation_type != "N"
                 )
-
                 if is_all_orders_completed:
                     self._log("All orders completed beyond normal operation.")
 
+                # Check if normal operation has ended.
                 if (
                     time.time()
                     >= normal_operation_start_time + current_operation_duration
@@ -399,7 +436,66 @@ class JobService:
         # Stop TC to effectively stop everything
         _ = self._tc_stop()
 
+    def _set_server(self):
+        """
+        Set the base URL of the simulation server.
+        """
+        if self.body.configuration.server_number == 1:
+            self.SM_BASE = SM_BASE_1
+            self.TC_BASE = TC_BASE_1
+        elif self.body.configuration.server_number == 2:
+            self.SM_BASE = SM_BASE_2
+            self.TC_BASE = TC_BASE_2
+
+    def _log(
+        self,
+        log_message: str,
+        station_code: int | None = None,
+        bin_code: int | None = None,
+        timestamp: float | None = None,
+    ):
+        """
+        Log the action to the simulation database, then to properly display the log in
+        console.
+
+        Parameters
+        ----------
+        log_message : str
+            The message to log
+        station_code : int | None, optional
+            The code of the station, by default None
+        bin_code : int | None, optional
+            The code of the bin, by default None
+        timestamp : float | None, optional
+            The timestamp of the action, by default None
+        """
+        self.simulation_database.log_action(
+            timestamp=timestamp if timestamp is not None else time.time(),
+            simulation_run_id=self.simulation_run_id,
+            station_code=station_code,
+            bin_code=bin_code,
+            action=log_message,
+        )
+
+        utc8_tz = timezone(timedelta(hours=8))
+        timestamp_dt = datetime.fromtimestamp(
+            timestamp if timestamp is not None else time.time(), tz=utc8_tz
+        )
+        readable_timestamp = timestamp_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        station_msg = f" - station={station_code}" if station_code is not None else ""
+        bin_msg = f" - bin={bin_code}" if bin_code is not None else ""
+        print(f"{readable_timestamp}{station_msg}{bin_msg} - {log_message}")
+
     def _get_current_operation(self) -> Tuple[Tuple[str, int], int]:
+        """
+        Get the current operation and its index in the operation list.
+
+        Returns
+        -------
+        Tuple[Tuple[str, int], int]
+            The current operation and its index in the operation list
+        """
         current_time_in_simulation = time.time() - self.simulation_start_time
 
         cumulative_duration = 0
@@ -413,12 +509,40 @@ class JobService:
     def _get_duration_up_to_current_operation(
         self, current_operation_index: int
     ) -> int:
+        """
+        Get the duration in seconds up to the current operation.
+
+        Parameters
+        ----------
+        current_operation_index : int
+            The index of the current operation
+
+        Returns
+        -------
+        int
+            The duration in seconds up to the current operation
+        """
         return sum(self.operations[i][1] for i in range(current_operation_index + 1))
 
     def _create_advance_orders(
         self, number_of_orders: int, number_of_bins_per_order: int
     ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Create advance orders.
 
+        Parameters
+        ----------
+        number_of_orders : int
+            The number of advance orders to create
+        number_of_bins_per_order : int
+            The number of bins per order
+
+        Returns
+        -------
+        Dict[str, List[Dict[str, Any]]]
+            The dictionary of advance orders, where the key is the order name and the
+            value is the list of bins in the order.
+        """
         orders = {
             str(numpy.random.randint(1, 1000000000)): self._get_bins_from_order(
                 number_of_bins=number_of_bins_per_order
@@ -429,6 +553,16 @@ class JobService:
         return orders
 
     def _submit_advance_orders(self, orders: Dict[str, List[Dict[str, Any]]]):
+        """
+        Submit advance orders to the server. A delay of 1 second is added between each
+        order to avoid busy-waiting.
+
+        Parameters
+        ----------
+        orders : Dict[str, List[Dict[str, Any]]]
+            The dictionary of advance orders, where the key is the order name and the
+            value is the list of bins in the order.
+        """
         for order_name, order in orders.items():
             storages = [{"code": bin["code"]} for bin in order]
             self._send_request(
@@ -502,7 +636,7 @@ class JobService:
         Returns
         -------
         List[Dict[str, Any]]
-            The list of bins
+            The list of bins as dictionaries
 
         Raises
         ------
@@ -542,6 +676,7 @@ class JobService:
                         station_code=station_code,
                     )
                     quantity_to_sample = min(quantity, len(bins_in_this_layer))
+
                     # Randomly sample bins from this layer
                     if quantity_to_sample > 0:
                         sampled_indices = numpy.random.choice(
@@ -670,6 +805,9 @@ class JobService:
             The code of the station
         bin_ids : List[int]
             The list of bin IDs to call
+        advance_order_name : str, optional
+            The name of the advance order to complete, by default None, which means the
+            order comes from a normal operation.
 
         Returns
         -------
@@ -703,6 +841,9 @@ class JobService:
             The code of the station
         bin_id : int
             The ID of the bin to store
+        advance_order_name : str, optional
+            The name of the advance order to complete, by default None, which means the
+            order comes from a normal operation.
 
         Returns
         -------
@@ -721,6 +862,14 @@ class JobService:
         return response.json()
 
     def _tc_stop(self) -> requests.Response | None:
+        """
+        Stop the cycle of the TC server.
+
+        Returns
+        -------
+        requests.Response | None
+            The response from the server
+        """
         response = self._send_request(
             url=f"{self.TC_BASE}/operation/cyclestop",
             data={
@@ -729,31 +878,6 @@ class JobService:
             },
         )
         return response
-
-    def _log(
-        self,
-        log_message: str,
-        station_code: int | None = None,
-        bin_code: int | None = None,
-        timestamp: float | None = None,
-    ):
-        self.simulation_database.log_action(
-            timestamp=timestamp if timestamp is not None else time.time(),
-            simulation_run_id=self.simulation_run_id,
-            station_code=station_code,
-            bin_code=bin_code,
-            action=log_message,
-        )
-
-        utc8_tz = timezone(timedelta(hours=8))
-        timestamp_dt = datetime.fromtimestamp(
-            timestamp if timestamp is not None else time.time(), tz=utc8_tz
-        )
-        readable_timestamp = timestamp_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-        station_msg = f" - station={station_code}" if station_code is not None else ""
-        bin_msg = f" - bin={bin_code}" if bin_code is not None else ""
-        print(f"{readable_timestamp}{station_msg}{bin_msg} - {log_message}")
 
     @staticmethod
     def _send_request(
@@ -769,8 +893,8 @@ class JobService:
 
         Parameters
         ----------
-        endpoint : str
-            The API endpoint to send the request to
+        url : str
+            The URL to send the request to
         method : str, optional
             The HTTP method to use (GET, POST, PUT, DELETE, etc.)
         data : Dict[str, Any], optional
@@ -811,14 +935,3 @@ class JobService:
         except requests.exceptions.RequestException as e:
             print(f"Request failed: {str(e)}")
             raise
-
-    def _set_server(self):
-        """
-        Set the base URL of the simulation server.
-        """
-        if self.body.configuration.server_number == 1:
-            self.SM_BASE = SM_BASE_1
-            self.TC_BASE = TC_BASE_1
-        elif self.body.configuration.server_number == 2:
-            self.SM_BASE = SM_BASE_2
-            self.TC_BASE = TC_BASE_2

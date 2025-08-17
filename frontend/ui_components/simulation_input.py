@@ -253,83 +253,6 @@ class SimulationInputUI:
 
         return is_success
 
-    def _recommend_number_of_skycars(
-        self, total_throughput: int, bins_per_skycar: int = 25
-    ):
-        """
-        Recommend the number of skycars based on the inbound and outbound throughputs.
-        One robot can roughly handle 25 bins per hour.
-
-        Parameters
-        ----------
-        total_throughput : int
-            The total throughput of the inbound and outbound orders.
-        bins_per_skycar : int, optional
-            The number of bins that one skycar can handle per hour, by default 25.
-        """
-        return math.ceil(total_throughput / bins_per_skycar)
-
-    def _show_bin_distribution_plot(self, pareto_p: float, pareto_q: float):
-        """
-        Display the bin distribution plot.
-
-        Parameters
-        ----------
-        pareto_p : float
-            The Pareto p value in decimal.
-        pareto_q : float
-            The Pareto q value in decimal.
-        """
-        z_size = self.grid_designer_ui.z_size
-
-        # If the z_size is not set (meaning no grid is uploaded), do not display the plot
-        if z_size is None:
-            return
-
-        # Get the cut-off point (x0) and Pareto index (alpha)
-        pareto = ParetoCalculator(min_layer=1, max_layer=z_size)
-        x0, alpha = pareto.get_alpha(p=pareto_p, q=pareto_q)
-
-        # Calculate the probabilities of each layer in percentage
-        probabilities_percent = [
-            pareto.probability_of_layer(layer=layer, alpha=alpha) * 100
-            for layer in range(1, z_size + 1)
-        ]
-
-        # Get the probability sum of the top x0 layers
-        top_x0_sum = sum(probabilities_percent[: int(x0)])
-        streamlit.info(
-            f"{top_x0_sum:.1f}% of the bins go into the top {int(x0)} "
-            + f"({x0/z_size*100:.1f}%) layer(s).",
-        )
-
-        # Display the bar plot
-        fig = go.Figure(
-            data=go.Bar(
-                x=list(range(1, z_size + 1)),
-                y=probabilities_percent,
-                text=[f"{p:.2f}" for p in probabilities_percent],
-                textposition="outside",
-            )
-        )
-        fig.update_layout(
-            title="Bin Distribution by Position of Layer",
-            xaxis_title="Position of Layer",
-            yaxis_title="Probability of layer (%)",
-            showlegend=False,
-        )
-
-        # Add indication to the top x0 layers
-        fig.update_traces(
-            marker_pattern_shape=["\\"] * int(x0) + [""] * (z_size - int(x0)),
-            marker_pattern_solidity=0.8,
-        )
-
-        streamlit.plotly_chart(fig)
-
-        # Store the probabilities in decimals for later use
-        self.pareto_probabilities = [i / 100 for i in probabilities_percent]
-
     def _display_durations(self, durations: pandas.DataFrame):
         """
         Display line plot that shows advance order and normal operation ranges.
@@ -417,7 +340,9 @@ class SimulationInputUI:
 
     def _store_durations(self, durations: pandas.DataFrame):
         """
-        Store the duration string to save in the simulation file.
+        Store the duration string to save in the simulation database. Duration string looks
+        like this: "N1800;AO1800;N600" (this means 1800 seconds of normal operation,
+        then 1800 seconds of advance order operation, then 600 seconds of normal operation).
 
         Parameters
         ----------
@@ -455,3 +380,80 @@ class SimulationInputUI:
             operation_ranges.append(f"{prefix}{int(current_duration * 60)}")
 
         self.duration_string = ";".join(operation_ranges)
+
+    def _recommend_number_of_skycars(
+        self, total_throughput: int, bins_per_skycar: int = 25
+    ):
+        """
+        Recommend the number of skycars based on the inbound and outbound throughputs.
+        One robot can roughly handle 25 bins per hour.
+
+        Parameters
+        ----------
+        total_throughput : int
+            The total throughput of the inbound and outbound orders.
+        bins_per_skycar : int, optional
+            The number of bins that one skycar can handle per hour, by default 25.
+        """
+        return math.ceil(total_throughput / bins_per_skycar)
+
+    def _show_bin_distribution_plot(self, pareto_p: float, pareto_q: float):
+        """
+        Display the bin distribution plot.
+
+        Parameters
+        ----------
+        pareto_p : float
+            The Pareto p value in decimal.
+        pareto_q : float
+            The Pareto q value in decimal.
+        """
+        z_size = self.grid_designer_ui.z_size
+
+        # If the z_size is not set (meaning no grid is uploaded), do not display the plot
+        if z_size is None:
+            return
+
+        # Get the cut-off point (x0) and Pareto index (alpha)
+        pareto = ParetoCalculator(min_layer=1, max_layer=z_size)
+        x0, alpha = pareto.get_alpha(p=pareto_p, q=pareto_q)
+
+        # Calculate the probabilities of each layer in percentage
+        probabilities_percent = [
+            pareto.probability_of_layer(layer=layer, alpha=alpha) * 100
+            for layer in range(1, z_size + 1)
+        ]
+
+        # Get the probability sum of the top x0 layers
+        top_x0_sum = sum(probabilities_percent[: int(x0)])
+        streamlit.info(
+            f"{top_x0_sum:.1f}% of the bins go into the top {int(x0)} "
+            + f"({x0/z_size*100:.1f}%) layer(s).",
+        )
+
+        # Display the bar plot
+        fig = go.Figure(
+            data=go.Bar(
+                x=list(range(1, z_size + 1)),
+                y=probabilities_percent,
+                text=[f"{p:.2f}" for p in probabilities_percent],
+                textposition="outside",
+            )
+        )
+        fig.update_layout(
+            title="Bin Distribution by Position of Layer",
+            xaxis_title="Position of Layer",
+            yaxis_title="Probability of layer (%)",
+            showlegend=False,
+        )
+
+        # Add indication to the top x0 layers
+        fig.update_traces(
+            marker_pattern_shape=["\\"] * int(x0) + [""] * (z_size - int(x0)),
+            marker_pattern_solidity=0.8,
+        )
+
+        streamlit.plotly_chart(fig)
+
+        # Store the probabilities in decimals for later use
+        self.pareto_probabilities = [i / 100 for i in probabilities_percent]

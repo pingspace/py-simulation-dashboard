@@ -55,12 +55,20 @@ jobs:
             -e SIMULATION_DATABASE_PORT='${{ secrets.SIMULATION_DATABASE_PORT }}' \
             -e SIMULATION_DATABASE_USER='${{ secrets.SIMULATION_DATABASE_USER }}' \
             -e SIMULATION_DATABASE_PASSWORD='${{ secrets.SIMULATION_DATABASE_PASSWORD }}' \
+            -e TC_BASE_1='${{ secrets.TC_BASE_1 }}' \
+            -e TC_BASE_2='${{ secrets.TC_BASE_2 }}' \
+            -e SM_BASE_1='${{ secrets.SM_BASE_1 }}' \
+            -e SM_BASE_2='${{ secrets.SM_BASE_2 }}' \
             '${{ secrets.ECR_REGISTRY }}'/'${{ secrets.ECR_REPOSITORY }}':latest && \
           docker run -d --restart=unless-stopped -p 3020:8000 \
             -e SIMULATION_DATABASE_HOST='${{ secrets.SIMULATION_DATABASE_HOST }}' \
             -e SIMULATION_DATABASE_PORT='${{ secrets.SIMULATION_DATABASE_PORT }}' \
             -e SIMULATION_DATABASE_USER='${{ secrets.SIMULATION_DATABASE_USER }}' \
             -e SIMULATION_DATABASE_PASSWORD='${{ secrets.SIMULATION_DATABASE_PASSWORD }}' \
+            -e TC_BASE_1='${{ secrets.TC_BASE_1 }}' \
+            -e TC_BASE_2='${{ secrets.TC_BASE_2 }}' \
+            -e SM_BASE_1='${{ secrets.SM_BASE_1 }}' \
+            -e SM_BASE_2='${{ secrets.SM_BASE_2 }}' \
             '${{ secrets.ECR_REGISTRY }}'/'${{ secrets.ECR_REPOSITORY }}':latest"
 
           # Execute the commands
